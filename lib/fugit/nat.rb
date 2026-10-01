@@ -647,11 +647,14 @@ module Fugit
 
     class SlotGroup
 
+      attr_reader :diagnostic_crons
+
       def initialize(slots)
 
 #puts "SlotGroup.new " + slots.inspect
         @slots = {}
         @hms = []
+        @diagnostic_crons = []
 
         slots.each do |s|
           if s.key == :hm
@@ -737,6 +740,11 @@ module Fugit
           .collect { |e|
             e.uniq.sort_by(&letters_last).collect(&:to_s).join(',') }
           .join(' ')
+
+        @diagnostic_crons << s
+          #
+          # captured for Fugit.diagnose_nat so failures inside the
+          # generated cron can be traced back to the original text
 
         c = Fugit::Cron.parse(s, opts)
 

@@ -121,6 +121,75 @@ Fugit.parse_cronish('12y12M')        # ==> nil
 Introduced in fugit 1.8.0.
 
 
+## diagnose, diagnose_cron, diagnose_duration, and diagnose_nat
+
+`parse` returning `nil` (or `do_parse` raising a generic "not a valid..." error) does not say _where_ an input is wrong or _what_ was expected. The `diagnose_` methods are a non-destructive companion for that: they never change the `parse` contract, they return a `Fugit::Diagnostic` (or `nil` when the input is valid) that pinpoints the failure location, the fields involved, and the expected syntax.
+
+```ruby
+require 'fugit'
+
+d = Fugit.diagnose_cron('0 25 * * *')
+
+d.type        # ==> :cron
+d.code        # ==> :out_of_range
+d.fields      # ==> [:hours]
+d.pos         # ==> 2          (0-based character offset)
+d.len         # ==> 2
+d.slice       # ==> '25'       (the exact text to highlight)
+d.byte_pos    # ==> 2          (same info, in bytes)
+d.byte_len    # ==> 2
+d.message     # ==> 'out of range value for the hours field (expected 0..23, got 25)'
+d.expected    # ==> ['integer 0-23 or "*"']
+d.line_and_column # ==> [1, 2]
+```
+
+It distinguishes the main failure classes a configuration UI needs:
+
+```ruby
+Fugit.diagnose_cron('0 0 * *').code
+  # ==> :missing_field  (fields: [:weekdays], zero-length span at the end)
+
+Fugit.diagnose_cron('0 0 * * * America/Foo').code
+  # ==> :invalid_timezone (fields: [:timezone])
+
+Fugit.diagnose_cron('*/0 * * * *').code
+  # ==> :invalid_step
+
+Fugit.diagnose_cron('0 0 -5-3 * *').code
+  # ==> :mixed_signs
+
+Fugit.diagnose_cron('* * 31 2 *').code
+  # ==> :never_occurs (Feb 31st never happens)
+
+Fugit.diagnose_duration('1h 30x').code   # ==> :invalid_unit (slice: 'x')
+Fugit.diagnose_duration('PT').code       # ==> :missing_field
+
+Fugit.diagnose_nat('every day at noon America/Foo').code
+  # ==> :invalid_timezone (slice points back at 'America/Foo')
+```
+
+When 6 fields could be read either as a seconds cron or as a 5-field cron followed by an extra token, the result is `:ambiguous` and carries each reading in `candidates`:
+
+```ruby
+d = Fugit.diagnose_cron('61 0 * * * *')
+d.code              # ==> :ambiguous
+d.candidates.size   # ==> 2
+```
+
+Positions always refer to the **original** string, leading/trailing whitespace included. Both character and byte offsets are returned so multibyte input highlights correctly, and errors that surface after expanding an alias (`@daily ...`) or a natural-language shorthand are re-mapped onto the text the user typed:
+
+```ruby
+d = Fugit.diagnose_cron("  0 25 * * *  ")
+d.slice   # ==> '25'
+
+d = Fugit.diagnose_cron('0 25あ * * *')
+d.slice      # ==> 'あ'
+d.byte_len   # ==> 3
+```
+
+`Fugit.diagnose(s)` runs the cron, duration, natural-language (and time) entries and returns the most relevant diagnostic, or `nil` if any entry parses. Call `#to_h` for a plain Hash suitable for JSON/APIs.
+
+
 ## `Fugit::Cron`
 
 A class `Fugit::Cron` to parse cron strings and then `#next_time` and `#previous_time` to compute the next or the previous occurrence respectively.
