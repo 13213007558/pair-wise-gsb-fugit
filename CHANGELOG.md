@@ -2,6 +2,12 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0 not yet released
+
+* Add Fugit::Duration::Sequence, anchored calendar duration sequences
+  with explicit on_overflow strategy (:clamp, :skip or :fail)
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256

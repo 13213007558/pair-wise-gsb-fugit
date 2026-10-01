@@ -679,6 +679,34 @@ p Fugit::Duration.to_long_s('1y2M1d4h')
   # => "1 year, 2 months, 1 day, and 4 hours"
 ```
 
+### `Fugit::Duration::Sequence`
+
+A duration can be turned into a sequence of points in time, anchored on an "anchor" time. Years and months are advanced calendar-wise, while the day of the month stays anchored to the day of the original anchor. Hours, minutes and seconds (like weeks and days) are added as absolute seconds, as `Fugit::Duration#add_to_time` does.
+
+The `on_overflow:` strategy has to be chosen explicitly. It decides what happens when the anchored day of the month does not exist in the target month:
+
+* `:clamp` - the occurrence is clamped to the last day of the month
+* `:skip` - the occurrence is skipped (`#at` returns `nil` for it)
+* `:fail` - an `ArgumentError` is raised
+
+```ruby
+seq = Fugit::Duration.parse('1M')
+  .sequence('2024-01-31 09:00 UTC', on_overflow: :clamp)
+
+seq.at(0)   # ==> 2024-01-31 09:00 UTC (the anchor)
+seq.at(1)   # ==> 2024-02-29 09:00 UTC (clamped)
+seq.at(2)   # ==> 2024-03-31 09:00 UTC
+seq.at(12)  # ==> 2025-01-31 09:00 UTC (no drift to the 28th/29th)
+seq.at(-1)  # ==> 2023-12-31 09:00 UTC (negative indices count backwards)
+
+seq.next_time('2024-02-15')      # ==> 2024-02-29 09:00 UTC
+seq.previous_time('2024-02-15')  # ==> 2024-01-31 09:00 UTC
+
+seq.first(3)  # ==> [ 2024-01-31, 2024-02-29, 2024-03-31 ] 09:00 UTC
+```
+
+Each occurrence is computed directly from the original anchor, never by accumulating previously computed (and potentially clamped) occurrences. Iterating with `#each`/`#next_time` thus yields exactly the same points in time as direct `#at(n)` lookups, and the anchored day does not drift as years go by. A monthly task anchored on January 31st does not become a "28th of the month" task after February.
+
 
 ## `Fugit::At`
 

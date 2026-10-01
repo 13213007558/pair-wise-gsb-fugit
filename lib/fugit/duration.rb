@@ -313,6 +313,17 @@ module Fugit
       add(from)
     end
 
+    # Returns a Fugit::Duration::Sequence applying this duration
+    # repeatedly to the given anchor time. The on_overflow strategy
+    # (:clamp, :skip or :fail) has to be chosen explicitly, it decides
+    # what happens when the anchored day of the month does not exist
+    # in the target month (think "every month" anchored on Jan 31st).
+    #
+    def sequence(anchor, on_overflow:)
+
+      Sequence.new(self, anchor, on_overflow: on_overflow)
+    end
+
     # Returns a copy of this duration, omitting its seconds.
     #
     def drop_seconds

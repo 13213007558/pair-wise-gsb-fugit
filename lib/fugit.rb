@@ -6,6 +6,7 @@ module Fugit
   MAX_INPUT_LENGTH = 256
 end
 
+require 'date'
 require 'time'
 require 'stringio'
 
@@ -15,6 +16,7 @@ require 'et-orbi'
 require 'fugit/misc'
 require 'fugit/cron'
 require 'fugit/duration'
+require 'fugit/sequence'
 require 'fugit/nat'
 require 'fugit/at'
 require 'fugit/parse'
