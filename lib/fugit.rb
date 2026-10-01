@@ -17,5 +17,6 @@ require 'fugit/cron'
 require 'fugit/duration'
 require 'fugit/nat'
 require 'fugit/at'
+require 'fugit/diagnose'
 require 'fugit/parse'
 

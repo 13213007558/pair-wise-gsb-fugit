@@ -120,6 +120,67 @@ Fugit.parse_cronish('12y12M')        # ==> nil
 
 Introduced in fugit 1.8.0.
 
+## diagnose, diagnose_cron, diagnose_duration, and diagnose_nat
+
+The `parse_` methods return `nil` on a bad input and the `do_parse_` methods raise a generic `ArgumentError`; neither says *where* the input is wrong, *which field* is involved, or *what* was expected. The `diagnose_` methods return a structured report instead.
+
+```ruby
+require 'fugit'
+
+r = Fugit.diagnose_cron('0 25 * * *')
+
+r.class       # ==> Fugit::Diagnose::Report
+r.valid?      # ==> false
+r.issues.size # ==> 2
+```
+
+The expression `0 25 * * *` can be read two ways: as a 6-field cron (with seconds) it is missing its day-of-week; as a classic 5-field cron its hour value `25` is out of range. Both readings are reported, tagged with the interpretation they belong to:
+
+```ruby
+r.issues.each { |i| p [ i.kind, i.field, i.position, i.length, i.got, i.interpretations ] }
+  # ==> [:missing_field, :weekdays, 9, 0, nil, [:scron]]
+  # ==> [:out_of_range,  :hours,    2, 2, 25,  [:ccron]]
+
+# the position/length slice highlights exactly the offending span:
+'0 25 * * *'[2, 2]  # ==> "25"
+```
+
+Each issue carries:
+
+* `kind` — one of `:invalid_timezone`, `:out_of_range`, `:missing_field`, `:syntax`, `:unknown_alias`, `:unexpected_input`, `:ambiguous`
+* `field` — the cron/duration field involved (`:hours`, `:minutes`, `:weekdays`, `:timezone`, ...) or `nil`
+* `position` / `length` — a character (codepoint, not byte) offset and span into the **original** string, suitable for highlighting in a UI
+* `line`, `column` and a `snippet` (`before` / `segment` / `after`) for rendering
+* `expected` / `got` — the accepted value range or syntax, and what was read
+* `interpretations` — for cron, the grammar reading(s) the issue belongs to (`:scron` for the 6-field form, `:ccron` for the classic form)
+
+The other entry points work the same way:
+
+```ruby
+Fugit.diagnose_duration('1y2z3d').issues.first
+  # ==> #<Fugit::Diagnose::Issue ... @kind=:syntax @position=3 @length=1 @got="z">
+
+Fugit.diagnose_nat('at 25:00').issues.first
+  # ==> #<Fugit::Diagnose::Issue ... @kind=:out_of_range @field=:nat @got=25>
+
+Fugit.diagnose_nat('every day at noon in America/Foo').issues.first
+  # ==> #<Fugit::Diagnose::Issue ... @kind=:invalid_timezone @field=:timezone>
+```
+
+Natural phrases that silently collapse to multiple distinct crons are reported as ambiguities (still `parseable?`, but `ambiguous?`, with the readings in `interpretations`):
+
+```ruby
+r = Fugit.diagnose_nat('at 9:00 and 10:30')
+r.ambiguous?        # ==> true
+r.parseable?        # ==> true  (Fugit.parse_nat still returns its first cron)
+r.interpretations   # ==> ["0 9 * * *", "30 10 * * *"]
+```
+
+`Fugit.diagnose(s)` runs the cron, duration and natural-language entry points and merges their issues (each tagged with its source `:format`). Every report (and issue) responds to `#to_h` for serialization.
+
+The `diagnose_` methods never modify the legacy `parse_` / `do_parse_` return conventions, and positions are computed against the original input (leading/trailing whitespace and multibyte characters included). For cron aliases (`@daily`, ...) and shorthands, an error in the expanded text maps back to the alias token in the original string.
+
+
 
 ## `Fugit::Cron`
 

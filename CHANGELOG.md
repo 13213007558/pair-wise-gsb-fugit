@@ -2,6 +2,11 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0
+
+* Add `Fugit.diagnose`, `Fugit.diagnose_cron`, `Fugit.diagnose_duration`, and `Fugit.diagnose_nat`: structured parse diagnostics that report the failure location (character offset/length, line/column and snippet), the field involved, the kind of failure (invalid timezone, out of range, missing field, syntax, unknown alias, unexpected input, ambiguity) and the expected/got values. The legacy `parse_` / `do_parse_` return conventions are unchanged; positions are character offsets into the original string (whitespace and multibyte aware) and cron alias/shorthand errors map back to the original text.
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
