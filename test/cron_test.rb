@@ -29,6 +29,31 @@ group Fugit::Cron do
     [ '0 0 -4,-3 * *', '2016-02-26 00:00:00', '2016-02-01' ],
     [ '0 0 -4,-3 * *', '2016-02-27 00:00:00', '2016-02-26 12:00' ],
 
+    # Quartz "W" (nearest weekday, Monday to Friday) and "LW"
+
+    [ '0 0 15W * *', '2017-01-16 00:00:00' ],
+      # 2017-01-15 was a Sunday, fires on Monday the 16th
+    [ '0 0 15W * *', '2025-02-14 00:00:00', '2025-02-01' ],
+      # 2025-02-15 was a Saturday, fires on Friday the 14th
+    [ '0 0 15W * *', '2025-06-16 00:00:00', '2025-06-01' ],
+      # 2025-06-15 was a Sunday, fires on Monday the 16th
+    [ '0 0 15W * *', '2025-01-15 00:00:00', '2025-01-01' ],
+      # 2025-01-15 was a Wednesday, fires on the 15th itself
+    [ '0 0 1W * *', '2025-03-03 00:00:00', '2025-02-14' ],
+      # 2025-03-01 was a Saturday, fires on Monday the 3rd (no month jump)
+    [ '0 0 1W * *', '2025-09-01 00:00:00', '2025-08-14' ],
+    [ '0 0 LW * *', '2025-08-29 00:00:00', '2025-08-01' ],
+      # 2025-08-31 was a Sunday, fires on Friday the 29th
+    [ '0 0 LW * *', '2025-05-30 00:00:00', '2025-05-01' ],
+      # 2025-05-31 was a Saturday, fires on Friday the 30th
+    [ '0 0 LW * *', '2025-04-30 00:00:00', '2025-04-01' ],
+    [ '0 0 31W * *', '2025-05-30 00:00:00', '2025-04-01' ],
+      # no 31st in April, fires on 2025-05-30 (2025-05-31 was a Saturday)
+    [ '0 0 29W 2 *', '2024-02-29 00:00:00', '2023-02-01' ],
+      # no 29th in February 2023, next is the leap year 2024
+    [ '0 0 29W * *', '2023-03-29 00:00:00', '2023-02-01' ],
+    [ '0 0 29W * *', '2024-02-29 00:00:00', '2024-02-01' ],
+
     [ '* * * * sun', '2017-01-8' ],
 
     [ '* * -2 * *', '2017-01-30' ],
@@ -832,6 +857,21 @@ group Fugit::Cron do
     [ '* * -1 * *', '2016-02-29 23:59:00', '2016-03-15' ],
     [ '0 0 -4,-3 * *', '2017-02-26 00:00:00', '2017-03-15' ],
     [ '0 0 -4,-3 * *', '2017-02-25 00:00:00', '2017-02-25 23:00' ],
+
+    # Quartz "W" (nearest weekday, Monday to Friday) and "LW"
+
+    [ '0 0 15W * *', '2025-02-14 00:00:00', '2025-02-28' ],
+    [ '0 0 15W * *', '2025-01-15 00:00:00', '2025-02-13' ],
+    [ '0 0 15W * *', '2025-06-16 00:00:00', '2025-06-30' ],
+    [ '0 0 1W * *', '2025-02-03 00:00:00', '2025-03-02' ],
+      # 2025-03-01 was a Saturday, its "1W" is Monday 2025-03-03,
+      # hence the previous is Monday 2025-02-03
+    [ '0 0 LW * *', '2025-08-29 00:00:00', '2025-09-15' ],
+      # 2025-08-31 was a Sunday, "LW" is Friday 2025-08-29
+    [ '0 0 LW * *', '2025-05-30 00:00:00', '2025-06-01' ],
+    [ '0 0 31W * *', '2025-08-29 00:00:00', '2025-09-01' ],
+    [ '0 0 29W 2 *', '2024-02-29 00:00:00', '2025-01-01' ],
+      # no 29th in February 2023, previous is the leap year 2024
     [ '* * * * sun', '2017-01-29 23:59:00', '2017-01-31' ],
     [ '* * * * mon#2', '2017-01-09 23:59:00', '2017-01-31' ],
     [ '* * * * mon#-1', '2017-01-30 23:59:00', '2017-01-31' ],
@@ -961,6 +1001,106 @@ group Fugit::Cron do
           "cron expression most likely invalid (Feb 30th like?), " +
           "please fill an issue at https://git.io/fjJCQ")
       end
+    end
+  end
+
+  group 'Quartz "W" day of month' do
+
+    W_CRONS = [
+      '0 0 15W * *',
+      '0 0 1W * *',
+      '0 0 2W * *',
+      '0 0 LW * *',
+      '0 0 29W * *',
+      '0 0 30W * *',
+      '0 0 31W * *',
+      '0 0 15W 2 *',
+      '0 0 29W 2 *',
+      '0 0 LW 2 *',
+    ]
+
+    W_CRONS.each do |cron|
+
+      test "next_time and previous_time see the same times for #{cron.inspect}" do
+
+        c = Fugit::Cron.parse(cron)
+
+        t0 = Time.utc(2023, 1, 1)
+        t1 = Time.utc(2028, 1, 1)
+          #
+          # 2023-08-01 is a Tuesday, 2024 is a leap year,
+          # months starting on a Saturday (e.g. 2025-02, 2025-03, 2026-08)
+          # and months ending on a Sunday (e.g. 2025-08, 2026-05) are
+          # covered by this range
+
+        fw = []
+        t = t0
+        fw << t while (t = c.next_time(t)) < t1
+
+        bw = []
+        t = t1
+        bw << t while (t = c.previous_time(t)) > t0
+
+        fw = fw.collect { |t| t.getutc.strftime('%F %T') }.sort
+        bw = bw.collect { |t| t.getutc.strftime('%F %T') }.sort
+
+        assert(fw, bw)
+
+        fw.each do |s|
+
+          t = Time.parse("#{s} UTC")
+
+          assert c.match?(t)
+          assert (1..5).include?(t.wday) # Monday to Friday only
+        end
+      end
+    end
+
+    test 'does not cross the month boundary (month starting on a Saturday)' do
+
+      c = Fugit::Cron.parse('0 0 1W * *')
+
+      # 2025-03-01 was a Saturday
+
+      assert(
+        c.next_time(Time.utc(2025, 2, 14)).getutc.strftime('%F'),
+        '2025-03-03') # Monday the 3rd, not Friday 2025-02-28
+
+      assert(
+        c.previous_time(Time.utc(2025, 3, 4)).getutc.strftime('%F'),
+        '2025-03-03')
+    end
+
+    test 'does not cross the month boundary (month ending on a Sunday)' do
+
+      c = Fugit::Cron.parse('0 0 LW * *')
+
+      # 2025-08-31 was a Sunday
+
+      assert(
+        c.next_time(Time.utc(2025, 8, 1)).getutc.strftime('%F'),
+        '2025-08-29') # Friday the 29th, not Monday 2025-09-01
+
+      assert(
+        c.previous_time(Time.utc(2025, 9, 15)).getutc.strftime('%F'),
+        '2025-08-29')
+    end
+
+    test 'leap year February' do
+
+      c = Fugit::Cron.parse('0 0 29W * *')
+
+      assert(
+        c.next_time(Time.utc(2023, 2, 1)).getutc.strftime('%F'),
+        '2023-03-29') # no 29th in February 2023
+
+      assert(
+        c.next_time(Time.utc(2024, 2, 1)).getutc.strftime('%F'),
+        '2024-02-29') # Thursday
+
+      assert(
+        c.previous_time(Time.utc(2024, 3, 1)).getutc.strftime('%F'),
+        '2024-02-29')
     end
   end
 
@@ -1404,6 +1544,19 @@ group Fugit::Cron do
         '* * * */-1 *',
         '* * * * */-1', # those are "unparseable"
 
+        # Quartz "W" day of month, invalid forms
+
+        '* * 0W * *',    # 0 is not a valid day of month
+        '* * 32W * *',   # 32 neither
+        '* * W * *',     # W alone means nothing
+        '* * lastW * *', # only LW, not lastW
+        '* * 15W,10 * *',   # W cannot be combined in a list
+        '* * 15W,16W * *',  # not even with another W
+        '* * 15W/2 * *',    # W cannot take a step
+        '* * 10-15W * *',   # W cannot be part of a range
+        '* * 15W * mon',    # W cannot be combined
+        '* * 15W * 1-5',    # with a restricted day of week field
+
         # min hour dom mon dow
         # sec min hour dom mon dow
 
@@ -1435,6 +1588,16 @@ group Fugit::Cron do
           # not how the 31st gets dropped
         '* * 30,31 3,4 *' => [ [ 3, 4 ], [ 30, 31 ] ],
         '* * 31 3,4 *' => [ [ 3 ], [ 31 ] ],
+
+        '* * 30W 2 *' => nil,
+        '* * 31W 2 *' => nil,
+        '* * 31W 2,4 *' => nil,
+          #
+          # the "W" trigger day does not exist in those months
+
+        '* * 29W 2 *' => [ [ 2 ], [ [ :w, 29 ] ] ],
+          #
+          # 29 is fine for February (leap years)
 
       }.each do |cron, modays|
 
@@ -1568,6 +1731,12 @@ group Fugit::Cron do
       '0 0 12,13 * 1-5&' => '0 0 12,13 * 1,2,3,4,5&',
       '0 0 12,13& * 1-5' => '0 0 12,13 * 1,2,3,4,5&',
       '0 0 12,13& * 1-5&' => '0 0 12,13 * 1,2,3,4,5&',
+
+      '0 0 15W * *' => '0 0 15W * *',
+      '0 0 15w * *' => '0 0 15W * *',
+      '0 0 LW * *' => '0 0 LW * *',
+      '0 0 lw * *' => '0 0 LW * *',
+      '0 0 29W 2 *' => '0 0 29W 2 *',
     }
 
     cron_s.each do |source, target|

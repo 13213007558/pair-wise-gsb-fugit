@@ -208,10 +208,23 @@ Example of cron strings understood by fugit:
 '0 0 last * *'  # idem
 '0 0 -7-L * *'  # from the seventh to last to the last day of month at 00:00
 
+'0 0 15W * *'   # Monday to Friday nearest to the 15th of the month at 00:00
+'0 0 LW * *'    # last Monday to Friday day of the month at 00:00
+
 # and more...
 ```
 
 Please note that `'15/30 * * * *'` is interpreted as `'15-59/30 * * * *'` since fugit 1.4.6.
+
+### Quartz "W" (nearest weekday)
+
+Following Quartz, fugit accepts `nW` and `LW` in the day of month field. "Weekday" here simply means Monday to Friday, there is no holiday calendar support.
+
+* `'0 0 15W * *'` fires on the weekday (Monday to Friday) nearest to the 15th of each month. If the 15th is a Saturday, it fires on Friday the 14th; if it is a Sunday, it fires on Monday the 16th.
+* `'0 0 LW * *'` fires on the last weekday of the month.
+* The trigger never crosses the month boundary: if the 1st is a Saturday, `'0 0 1W * *'` fires on Monday the 3rd (not on the last Friday of the previous month); if the last day of the month is a Sunday, `LW` fires on the preceding Friday.
+* `n` must be a valid day of month (`1` to `31`), `'0 0 0W * *'` or `'0 0 32W * *'` are invalid. If `n` doesn't exist in a given month (like `31W` in a 30 day month, or `29W` in a non-leap year February), the cron simply doesn't fire that month.
+* Like Quartz, a `W` entry stands alone in its field: no list (`1,15W`), no range (`10-15W`), no step (`15W/2`), and the day of week field must be `*` (unrestricted). Such combinations are invalid and `Fugit::Cron.parse` returns nil for them.
 
 ### time zones
 

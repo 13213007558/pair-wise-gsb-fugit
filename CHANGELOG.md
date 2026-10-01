@@ -2,6 +2,12 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0 (not yet released)
+
+* Quartz "W" day of month, "15W" (nearest weekday) and "LW" (last
+  weekday of the month), weekday meaning Monday to Friday
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
