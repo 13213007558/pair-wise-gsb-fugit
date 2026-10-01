@@ -7,6 +7,7 @@ module Fugit
 end
 
 require 'time'
+require 'date'
 require 'stringio'
 
 require 'raabro'

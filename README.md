@@ -208,6 +208,9 @@ Example of cron strings understood by fugit:
 '0 0 last * *'  # idem
 '0 0 -7-L * *'  # from the seventh to last to the last day of month at 00:00
 
+'0 9 15W * *'   # at 09:00 on the weekday (Mon-Fri) closest to the 15th
+'0 0 LW * *'    # at 00:00 on the last weekday of the month
+
 # and more...
 ```
 
@@ -299,6 +302,39 @@ The hash extension can only be used in the day-of-week field.
 
 '0 23 * * mon#2,tue'  # the 2nd Monday of the month and every Tuesday, at 23:00
 ```
+
+### the Quartz weekday extension (nW and LW)
+
+Fugit understands the Quartz `W` (weekday) marker in the day-of-month field.
+"Weekday" here means Monday to Friday only, no holiday calendar.
+
+`nW` means "the weekday closest to day n" and `LW` means "the last weekday of the month".
+
+```ruby
+'0 9 15W * *'  # at 09:00 on the weekday closest to the 15th
+'0 0 1W * *'   # at 00:00 on the weekday closest to the 1st
+'0 0 LW * *'   # at 00:00 on the last weekday (Mon-Fri) of the month
+```
+
+The shifting never crosses a month boundary:
+
+* when day `n` is a Saturday, it shifts to Friday `n-1`, except for `1W`
+  which shifts forward to Monday the 3rd (the Friday belongs to the
+  previous month);
+* when day `n` is a Sunday, it shifts to Monday `n+1`, except when `n` is
+  the last day of the month, in which case it shifts back to Friday `n-2`
+  (the Monday belongs to the next month).
+
+So an accounting job that must run around the 15th, on a weekday, without
+ever leaving the month, is simply `0 0 15W * *`.
+
+If day `n` does not exist in a month (e.g. `31W` in April, or `29W` in a
+non-leap February), that month has no occurrence; when the month field is
+restricted as well, the cron is invalid (e.g. `30W 2`).
+
+`W` only accepts a single, plain day, so `15W,1W`, `1-15W`, `15W/2` and
+`-1W` are invalid. A `W` marker also cannot be combined with a restricted
+day-of-week field (day-of-week must stay `*`), as in `0 0 15W * mon-fri`.
 
 ### the modulo extension
 

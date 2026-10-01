@@ -2,6 +2,14 @@
 # CHANGELOG.md
 
 
+## fugit next (not yet released)
+
+* Add Quartz `nW` and `LW` (nearest weekday, last weekday) markers to the
+  cron day-of-month field, covering parse, match?, next_time,
+  previous_time, and to_cron_s; weekday means Mon-Fri only, no holiday
+  calendar, and the nearest-weekday shift never crosses a month boundary
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256

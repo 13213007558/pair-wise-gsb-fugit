@@ -21,6 +21,8 @@ module Fugit
       :original, :zone)
     attr_reader(
       :seconds, :minutes, :hours, :monthdays, :months, :weekdays, :timezone)
+    attr_reader(
+      :monthday_workday)
 
     class << self
 
@@ -87,11 +89,20 @@ module Fugit
         @seconds == [ 0 ] ? nil : (@seconds || [ '*' ]).join(','),
         (@minutes || [ '*' ]).join(','),
         (@hours || [ '*' ]).join(','),
-        (@monthdays || [ '*' ]).join(','),
+        monthdays_to_cron_s,
         (@months || [ '*' ]).join(','),
         weekdays_to_cron_s,
         @timezone ? @timezone.name : nil
           ].compact.join(' ')
+    end
+
+    def monthdays_to_cron_s
+
+      if @monthday_workday
+        (@monthdays.first == -1 ? 'LW' : "#{@monthdays.first}W")
+      else
+        (@monthdays || [ '*' ]).join(',')
+      end
     end
 
     class TimeCursor
@@ -215,11 +226,85 @@ module Fugit
 
       return true if @monthdays.nil?
 
+      return workday_monthday_match?(nt) if @monthday_workday
+
       last = (TimeCursor.new(self, nt).inc_month.time - 24 * 3600).day + 1
 
       @monthdays
         .collect { |d| d < 1 ? last + d : d }
         .include?(nt.day)
+    end
+
+    # Quartz "nearest weekday" matching.
+    #
+    # "nW" points at the weekday (Mon-Fri) closest to day n; see
+    # #nearest_workday for the exact, no-month-crossing shift rules.
+    #
+    # "LW" is the last weekday of the month.
+    #
+    # If n does not exist in a given month (e.g. "31W" in February),
+    # that month has no occurrence.
+    #
+    def workday_monthday_match?(nt)
+
+      return false if @monthdays.first > days_in_month(nt.year, nt.month)
+        #
+        # day does not exist this month (e.g. "31W" in April or
+        # "29W" in a non-leap February), no occurrence
+        # (months get pruned at parse time when the month field is restricted)
+
+      target =
+        if @monthdays.first == -1
+          last_workday(nt.year, nt.month)
+        else
+          nearest_workday(nt.year, nt.month, @monthdays.first)
+        end
+
+      nt.day == target
+    end
+
+    def days_in_month(year, month)
+
+      ::Date.new(year, month, -1).day
+    end
+
+    # "nW": the weekday (Mon-Fri) closest to day n.
+    #
+    # The shift never crosses the month boundary (deviating from Quartz
+    # itself, whose corner cases can land in the neighbouring month):
+    #   * n is a Saturday: shift back to Friday (n-1), except when n == 1,
+    #     shift forward to Monday the 3rd instead (the Friday is in the
+    #     previous month)
+    #   * n is a Sunday: shift forward to Monday (n+1), except when n is
+    #     the last day of the month, shift back to Friday (n-2) instead
+    #     (the Monday is in the next month)
+    #
+    def nearest_workday(year, month, day)
+
+      date = ::Date.new(year, month, day)
+
+      case date.wday
+      when 6 # Saturday
+        day == 1 ? day + 2 : day - 1
+      when 0 # Sunday
+        day == days_in_month(year, month) ? day - 2 : day + 1
+      else
+        day
+      end
+    end
+
+    def last_workday(year, month)
+
+      date = ::Date.new(year, month, -1) # last day of month
+
+      offset =
+        case date.wday
+        when 6 then -1 # Saturday -> Friday
+        when 0 then -2 # Sunday   -> Friday
+        else 0
+        end
+
+      date.day + offset
     end
 
     def day_match?(nt)
@@ -500,7 +585,9 @@ module Fugit
 
     def to_a
 
-      [ @seconds, @minutes, @hours, @monthdays, @months, @weekdays ]
+      a = [ @seconds, @minutes, @hours, @monthdays, @months, @weekdays ]
+      a << @monthday_workday if @monthday_workday
+      a
     end
 
     def to_h
@@ -509,6 +596,7 @@ module Fugit
         minutes: @minutes,
         hours: @hours,
         monthdays: @monthdays,
+        monthday_workday: @monthday_workday,
         months: @months,
         weekdays: @weekdays }
     end
@@ -584,7 +672,8 @@ module Fugit
         determine_monthdays(h[:dom], opts) &&
         determine_months(h[:mon], opts) &&
         determine_weekdays(h[:dow], opts) &&
-        determine_timezone(h[:tz])
+        determine_timezone(h[:tz]) &&
+        validate_weekday_field(opts)
 
       return nil unless valid
       return nil unless compact_month_days
@@ -710,7 +799,59 @@ module Fugit
     end
 
     def determine_monthdays(arr, opts)
-      (@monthdays = do_determine(:monthdays, arr, 1, 31, opts)) != false
+
+      workdays = arr.select { |a, z, sp, sl, _, _, wd| wd }
+
+      if workdays.any?
+
+        #
+        # Quartz nW / LW (nearest weekday, last weekday of month)
+        #
+        # W only makes sense as a single, unadorned day specifier
+
+        if workdays.length > 1 ||
+           arr.length > 1 ||
+           workdays.first[2] != nil || # range or tilde
+           workdays.first[3] != nil    # step
+
+          return fail_parse(opts,
+            'the W (weekday) marker can only appear alone in the ' +
+            'day-of-month field, as in "15W" or "LW", it cannot be ' +
+            'combined with other days, ranges, or steps')
+        end
+
+        a = workdays.first[0]
+
+        @monthday_workday = true
+        @monthdays = [ a ]
+      else
+
+        @monthday_workday = false
+        r = do_determine(:monthdays, arr, 1, 31, opts)
+
+        return false if r == false
+
+        @monthdays = r
+      end
+
+      true
+    end
+
+    def validate_weekday_field(opts)
+
+      return true unless @monthday_workday && @weekdays
+
+      fail_parse(opts,
+        'a Quartz W (weekday) marker in the day-of-month field ' +
+        '(as in "15W" or "LW") cannot be combined with a restricted ' +
+        'day-of-week field, leave day-of-week as "*"')
+    end
+
+    def fail_parse(opts, message)
+
+      fail ArgumentError.new(message) if opts[:do_parse]
+
+      false
     end
 
     def determine_months(arr, opts)
@@ -807,7 +948,10 @@ module Fugit
 
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
-      def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
+      def dom(i)
+        rex(:dom, i,
+          /((?:3[01]|[12][0-9]|0?[1-9])w|lw|lastw|-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i)
+      end
       def mon(i); rex(:mon, i, MONTH_REX); end
       def dow(i); rex(:dow, i, DOW_REX); end
 
@@ -943,10 +1087,20 @@ module Fugit
         z = zt ? rewrite_bound(k, zt) : nil
         sp = spt ? spt.name : nil
 
+        # Quartz "weekday" marker, nW or LW, only valid in day-of-month
+        wd = nil
+        if k == :dom
+          [ at, zt ].each do |bt|
+            next unless bt
+            s = bt.string
+            wd = s.length if s.downcase =~ /w\z/
+          end
+        end
+
         #a, z = z, a if a && z && a > z
           # handled downstream since gh-27
 
-        [ a, z, sp, sl, ha, mo ]
+        [ a, z, sp, sl, ha, mo, wd ]
       end
 
       def rewrite_entry(t)
