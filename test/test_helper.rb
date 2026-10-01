@@ -7,6 +7,7 @@
 
 require 'pp'
 require 'ostruct'
+require 'shellwords'
 
 require 'chronic'
 ::Khronic = ::Chronic

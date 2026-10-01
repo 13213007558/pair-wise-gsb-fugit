@@ -8,6 +8,7 @@ end
 
 require 'time'
 require 'stringio'
+require 'digest'
 
 require 'raabro'
 require 'et-orbi'

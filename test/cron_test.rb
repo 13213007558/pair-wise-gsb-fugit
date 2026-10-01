@@ -1973,5 +1973,272 @@ group Fugit do
       assert Fugit.parse_cron("* * * * * " * 100), nil
     end
   end
+
+  group 'the stable hash (H) extension' do
+
+    hkey = 'tenant-42'
+    hns = 'billing'
+    hopts = { key: hkey, namespace: hns }
+    hruby = ::RbConfig.ruby
+
+    group 'fixed vectors' do
+
+      # These vectors are fixed: they are computed with Digest::SHA256
+      # and must not change across processes or Ruby versions.
+      #
+      [
+        [ 'H * * * *',          '9 * * * *' ],
+        [ 'H H * * *',          '9 4 * * *' ],
+        [ 'H(0-29) * * * *',    '9 * * * *' ],
+        [ 'H/15 * * * *',       '9,24,39,54 * * * *' ],
+        [ 'H(0-29)/10 * * * *', '9,19,29 * * * *' ],
+        [ '* H(9-17)/2 * * *',  '* 9,11,13,15,17 * * *' ],
+        [ '0 0 * * H',          '0 0 * * 1' ],
+        [ '0 0 * * H(mon-fri)', '0 0 * * 3' ],
+        [ '0 0 1 H H',          '0 0 1 3 1' ],
+        [ 'H,H,H,H,H * * * *',  '4,5,9,41,58 * * * *' ],
+        [ '* * * * H/2',        '* * * * 0,2,4,6' ],
+        [ 'H * * * * *',        '13 * * * * *' ],
+
+      ].each do |src, expanded|
+
+        test "expands #{src.inspect} to #{expanded.inspect}" do
+
+          c = Fugit.parse_cron(src, hopts)
+
+          assert c.class, Fugit::Cron
+          assert c.original, src
+          assert c.hash_key, hkey
+          assert c.hash_namespace, hns
+          assert c.expanded, expanded
+          assert c.to_cron_s, expanded
+        end
+      end
+
+      test 'defaults the namespace to "fugit"' do
+
+        c = Fugit.parse_cron('H * * * *', key: hkey)
+
+        assert c.hash_namespace, 'fugit'
+        assert c.expanded, '36 * * * *'
+      end
+
+      test 'uses the namespace as a salt' do
+
+        a = Fugit.parse_cron('H * * * *', key: hkey, namespace: 'billing')
+        b = Fugit.parse_cron('H * * * *', key: hkey, namespace: 'x')
+
+        assert a.expanded, '9 * * * *'
+        assert b.expanded, '49 * * * *'
+      end
+    end
+
+    group 'stability' do
+
+      test 'expands the same inputs to the same output' do
+
+        a = Fugit.parse_cron('H H(0-6)/2 H(1-31) H(1-12) H(0-6)', hopts)
+        b = Fugit.parse_cron('H H(0-6)/2 H(1-31) H(1-12) H(0-6)', hopts)
+
+        assert b.to_a, a.to_a
+        assert b.expanded, a.expanded
+      end
+
+      test 'is stable across processes' do
+
+        s =
+          "require 'fugit';" +
+          "print Fugit.parse_cron(" +
+          "'H H(0-6)/2 H(1-31) H(1-12) H(0-6)'," +
+          " key: 'tenant-42', namespace: 'billing').expanded"
+
+        out = `#{hruby} -Ilib -e #{::Shellwords.escape(s)}`
+
+        assert out, Fugit.parse_cron('H H(0-6)/2 H(1-31) H(1-12) H(0-6)', hopts).expanded
+      end
+
+      test 'covers the whole minute range over many keys' do
+
+        minutes =
+          (0...2000).collect { |i|
+            Fugit.parse_cron("H * * * *", key: "tenant-#{i}", namespace: hns).minutes.first }
+
+        assert minutes.uniq.sort, (0..59).to_a
+      end
+    end
+
+    group 'independence of fields' do
+
+      test 'salts each field independently' do
+
+        c = Fugit.parse_cron('H H * * *', hopts)
+
+        assert c.minutes, [ 9 ]
+        assert c.hours, [ 4 ]
+      end
+
+      test 'salts each placeholder in a field by its position' do
+
+        c = Fugit.parse_cron('H,H,H,H,H * * * *', hopts)
+
+        assert c.minutes, [ 4, 5, 9, 41, 58 ]
+      end
+
+      test 'does not let another field influence the hash' do
+
+        a = Fugit.parse_cron('H 7 * * 1', hopts)
+        b = Fugit.parse_cron('H 18 * * 5', hopts)
+
+        assert a.minutes, b.minutes
+        assert a.minutes, [ 9 ]
+      end
+
+      test 'only re-decides hash fields when the key changes' do
+
+        a = Fugit.parse_cron('H 7,12,18 * * 1-5', key: 'k1')
+        b = Fugit.parse_cron('H 7,12,18 * * 1-5', key: 'k2')
+
+        assert a.hours, b.hours
+        assert a.weekdays, b.weekdays
+        assert a.months, b.months
+        assert a.monthdays, b.monthdays
+        assert a.minutes == b.minutes, false
+      end
+    end
+
+    group 'range and step rules' do
+
+      test 'picks one stable value in the range' do
+
+        c = Fugit.parse_cron('H(50-59) * * * *', hopts)
+
+        assert c.minutes, [ 59 ]
+      end
+
+      test 'clamps a step larger than the span to a single value' do
+
+        assert Fugit.parse_cron('H/90 * * * *', hopts).minutes, [ 9 ]
+      end
+
+      test 'accepts a step of 1 as the whole range' do
+
+        assert Fugit.parse_cron('H/1 * * * *', hopts).minutes, (0..59).to_a
+      end
+
+      test 'accepts month and weekday names in bounds' do
+
+        assert Fugit.parse_cron('0 0 1 H(jun-aug) *', hopts).months, [ 8 ]
+        assert Fugit.parse_cron('0 0 * * H(mon-fri)', hopts).weekdays.collect(&:first), [ 3 ]
+      end
+
+      [
+        'H(40-30) * * * *', # reversed range
+        'H(60) * * * *',    # out of bounds
+        'H(70) * * * *',    # way out of bounds
+        'H(last) * * * *',  # negative / "last" bounds
+        'H(-5) * * * *',    # negative bounds
+        'H/0 * * * *',      # zero step
+        'h * * * *',        # lowercase is not the hash extension
+        'h(0-2) * * * *',   #
+      ].each do |src|
+
+        test "rejects #{src.inspect}" do
+
+          assert Fugit.parse_cron(src, hopts), nil
+        end
+      end
+
+      test 'does not mistake H for the beginning of an identifier' do
+
+        assert Fugit.parse_cron('* * * * * HST', key: 'k').zone, 'HST'
+        assert Fugit.parse_cron('0 0 * * H America/Havana', key: 'k').timezone.name,
+          'America/Havana'
+      end
+    end
+
+    group 'key requirement' do
+
+      [ nil, '', '   ' ].each do |key|
+
+        test "raises when an H is present but key is #{key.inspect}" do
+
+          assert_error(
+            lambda { Fugit.parse_cron('H * * * *', key: key) },
+            ArgumentError,
+            /stable hash placeholder.*:key/)
+        end
+      end
+
+      test 'does not require a key when no H is present' do
+
+        assert Fugit.parse_cron('0 7 * * *').class, Fugit::Cron
+      end
+
+      test 'do_parse_cron raises the same ArgumentError' do
+
+        assert_error(
+          lambda { Fugit.do_parse_cron('H * * * *') },
+          ArgumentError,
+          /stable hash placeholder.*:key/)
+      end
+    end
+
+    group 'serialization' do
+
+      test 'keeps original and expanded distinct' do
+
+        c = Fugit.parse_cron('H(0-29)/10 7 * * 1-5', hopts)
+
+        assert c.original, 'H(0-29)/10 7 * * 1-5'
+        assert c.expanded, '9,19,29 7 * * 1,2,3,4,5'
+      end
+
+      test 'survives Marshal and reproduces the same trigger times' do
+
+        c0 = Fugit.parse_cron('H(0-29)/10 7 * * 1-5', hopts)
+        c1 = Marshal.load(Marshal.dump(c0))
+
+        assert c1.original, c0.original
+        assert c1.expanded, c0.expanded
+        assert c1.to_a, c0.to_a
+
+        t = Time.utc(2026, 1, 1)
+
+        assert c1.next_time(t), c0.next_time(t)
+      end
+
+      test 'survives YAML and reproduces the same trigger times' do
+
+        require 'yaml'
+        c0 = Fugit.parse_cron('H(0-29)/10 7 * * 1-5', hopts)
+        c1 = YAML.unsafe_load(YAML.dump(c0))
+
+        assert c1.expanded, c0.expanded
+        assert c1.to_a, c0.to_a
+
+        t = Time.utc(2026, 1, 1)
+
+        assert c1.next_time(t), c0.next_time(t)
+      end
+    end
+
+    group 'coexistence with the random extension' do
+
+      test 'leaves the tilde behavior untouched' do
+
+        c = Fugit.parse_cron('~ * * * *', random: false)
+
+        assert c.expanded, '0 * * * *'
+      end
+
+      test 'lets tilde and H coexist in the same cron string' do
+
+        c = Fugit.parse_cron('~ H * * *', key: hkey, namespace: hns, random: false)
+
+        assert c.minutes, [ 0 ]
+        assert c.hours, [ 4 ]
+      end
+    end
+  end
 end
 

@@ -509,6 +509,49 @@ Fugit.parse('~ * * * *', random: SecureRandom) # on a cryptographically secure r
 Please note that the random values are determined at parse time. So `"~29 * * * *"` at parse time could become `"17 * * * *"` for example and go on triggering every hour at minute 17, until a new parsing occurs and another (or the same) minute is picked. This aligns with the OpenBSD [`man 5 crontab`](https://man.openbsd.org/crontab.5), OpenBSD `crond` rolling the dice at load time.
 
 
+### the stable hash extension
+
+Fugit accepts the `H` (hash) placeholder, inspired by the Jenkins `H` notation. It's meant to spread thousands of schedules that would otherwise all fire at the same minute (or hour, ...). Unlike the `~` random extension, `H` is deterministic: the same business key and namespace always expand to the same value, in any process and on any Ruby version.
+
+```ruby
+Fugit.parse('H * * * *', key: 'tenant-42')        # '36 * * * *'
+Fugit.parse('H H * * *', key: 'tenant-42')        # '36 16 * * *'
+Fugit.parse('H(0-29) * * * *', key: 'tenant-42')  # '6 * * * *'
+Fugit.parse('H/15 * * * *', key: 'tenant-42')     # '6,21,36,51 * * * *'
+```
+
+The `:key` is the business key (a tenant id, an account name, ...) and is mandatory as soon as a cron string contains an `H`. `Fugit::Cron#original` returns the unexpanded cron string while `#expanded` (alias `#to_cron_s`) returns the expanded one.
+
+```ruby
+c = Fugit.parse('H(0-29)/10 7 * * 1-5', key: 'tenant-42', namespace: 'billing')
+
+c.original  # 'H(0-29)/10 7 * * 1-5'
+c.expanded  # '9,19,29 7 * * 1,2,3,4,5'
+c.hash_key  # 'tenant-42'
+c.hash_namespace  # 'billing'
+```
+
+The forms are:
+
+* `H` — one stable value over the whole field range
+* `H(a-b)` — one stable value in the range `a-b`
+* `H/step` — `phase, phase+step, ...` over the whole range, where `phase` is a stable value in `[0, step-1]`
+* `H(a-b)/step` — `phase, phase+step, ...` over `a-b`, where `phase` is a stable value in `[a, a+step-1]`
+
+A step larger than the range is clamped to the range and yields a single value. Each placeholder is hashed independently: two `H` placeholders in the same field (as in `H,H * * * *`) or in different fields are salted with the field name and their position, so they never influence each other regardless of parse order. Changing the key only re-decides the fields that contain an `H`; the other fields stay exactly the same.
+
+The optional `:namespace` (defaults to `"fugit"`) is part of the salt, so two systems hashing the same key don't collide:
+
+```ruby
+Fugit.parse('H * * * *', key: 'tenant-42', namespace: 'billing').expanded
+  # '9 * * * *'
+Fugit.parse('H * * * *', key: 'tenant-42', namespace: 'invoicing').expanded
+  # '1 * * * *'
+```
+
+The values are derived with SHA-256, not Ruby's `String#hash`, so they are stable across processes and Ruby versions. Like the random extension, values are decided at parse time; serializing a `Fugit::Cron` (Marshal or YAML) preserves the expanded form and reproduces the exact same trigger sequence. Only an uppercase `H` (not lowercase `h`) starts the extension, so timezones such as `HST` and identifiers starting with "H" are unaffected; the random `~` extension is untouched and may combine with `H` in the same cron string.
+
+
 ### the second extension
 
 Fugit accepts cron strings with five elements, `minute hour day-of-month month day-of-week`, the standard cron format or six elements `second minute hour day-of-month month day-of-week`.

@@ -2,6 +2,11 @@
 # CHANGELOG.md
 
 
+## next
+
+* Add the stable hash cron extension: `H`, `H(a-b)`, `H/step`, and `H(a-b)/step`, expanded deterministically from a caller-provided business `:key` and optional `:namespace`
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256

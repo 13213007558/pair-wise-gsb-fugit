@@ -17,10 +17,17 @@ module Fugit
     MAXDAYS = [
       nil, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ].freeze
 
+    # Default namespace for the "H" (stable hash) cron extension.
+    # See #stable_hash_remainder.
+    #
+    DEFAULT_HASH_NAMESPACE = 'fugit'.freeze
+
     attr_reader(
       :original, :zone)
     attr_reader(
       :seconds, :minutes, :hours, :monthdays, :months, :weekdays, :timezone)
+    attr_reader(
+      :expanded, :hash_key, :hash_namespace)
 
     class << self
 
@@ -577,6 +584,17 @@ module Fugit
       @cron_s = nil # just to be sure
       @day_and = h[:&]
 
+      @hash_key = opts[:key]
+      @hash_namespace = opts[:namespace] || DEFAULT_HASH_NAMESPACE
+
+      if hash_fields?(h) &&
+         (@hash_key.nil? || @hash_key.to_s.strip.length == 0)
+
+        fail ArgumentError.new(
+          'cron string contains a stable hash placeholder ("H") but ' +
+          "no :key was given, cannot expand #{original.inspect}")
+      end
+
       valid =
         determine_seconds(h[:sec], opts) &&
         determine_minutes(h[:min], opts) &&
@@ -589,7 +607,19 @@ module Fugit
       return nil unless valid
       return nil unless compact_month_days
 
+      @expanded = to_cron_s
+
       self
+    end
+
+    # Tells whether the given parsed tree contains at least one stable
+    # hash ("H") placeholder.
+    #
+    def hash_fields?(h)
+
+      %i[ sec min hou dom mon dow ]
+        .any? { |k|
+          (h[k] || []).any? { |e| e.is_a?(::Array) && e[6] } }
     end
 
     def expand(min, max, opts, r)
@@ -618,6 +648,89 @@ module Fugit
       edn = max if edn == nil || edn < 0 && sta > 0
 
       range(min, max, sta, edn, sla)
+    end
+
+    # Stable hash expansion for the "H" extension.
+    #
+    # `field` is the cron field name (:minutes, :hours, ...), used as a
+    # salt so that two "H" placeholders, in different fields or at
+    # different positions in the same field, are decided independently
+    # and cannot influence one another no matter the parse order.
+    #
+    # `r` is the rewritten element
+    # `[ a, z, sp, sl, ha, mo, hh ]` where `hh` is truthy for "H".
+    #
+    # Forms:
+    #
+    #   H            one stable value in [min, max]
+    #   H(a-b)       one stable value in [a, b]
+    #   H/step       values phase, phase+step, ... over [min, max],
+    #                phase is a stable value in [0, step-1]
+    #   H(a-b)/step  values phase, phase+step, ... over [a, b],
+    #                phase is a stable value in [a, a+step-1]
+    #
+    # A step greater than the span (it's "dumb but valid", see gh-86 and
+    # gh-103) yields a single value.
+    #
+    def expand_h(min, max, field, index, opts, r)
+
+      sta, edn, _sp, sla = r
+
+      return false if sla && sla < 1
+      return false if sta && (sta < min || sta > max)
+      return false if edn && (edn < min || edn > max)
+      return false if sta && edn && sta > edn
+
+      n = (edn || max) - (sta || min) + 1
+
+      if sla
+
+        sla = n if sla > n # clamp the step to the span
+
+        phase_base = sta || min
+        phase = phase_base + stable_hash_remainder(field, index, sla, opts)
+
+        a = []
+        v = phase
+        last = edn || max
+
+        loop do
+          a << v
+          v += sla
+          break if v > last
+        end
+
+        a
+      else
+        stable_hash_remainder(field, index, n, opts) + (sta || min)
+      end
+    end
+
+    # Returns a stable value in [0, count) derived from the business key
+    # (opts[:key]), the namespace (opts[:namespace], defaulting to
+    # "fugit"), the cron field label, and the position of the placeholder
+    # within its field.
+    #
+    # The digest is computed with Digest::SHA256 (Ruby stdlib) so the
+    # same inputs produce the same output across processes and Ruby
+    # versions, regardless of String#hash.
+    #
+    def stable_hash_remainder(field, index, count, opts)
+
+      salt = [
+        'fugit-h-v1',
+        @hash_namespace,
+        @hash_key,
+        field.to_s,
+        index
+      ].collect(&:to_s).join("\0")
+
+      d = ::Digest::SHA256.digest(salt)
+
+      n = 0
+      d.bytes.first(8).each_with_index { |b, i| n |= (b << (8 * i)) }
+
+      n % count
     end
 
     def random(min, max, sta, edn, sla, opts)
@@ -685,7 +798,10 @@ module Fugit
       null = false
 
       r = arr
-        .collect { |v|
+        .each_with_index
+        .collect { |v, i|
+          (v.is_a?(::Array) && v[6]) ?
+          expand_h(min, max, key, i, opts, v) :
           expand(min, max, opts, v) }
         .flatten(1)
         .collect { |e|
@@ -721,7 +837,21 @@ module Fugit
 
       @weekdays = []
 
-      arr.each do |a, z, sp, sl, ha, mo| # a to z, seperator, slash, hash, and mod
+      arr.each_with_index do |e, i|
+
+        a, z, sp, sl, ha, mo, hh = e # a to z, separator, slash, hash, mod, H
+
+        if hh
+
+          r = expand_h(0, 6, :weekdays, i, opts, e)
+
+          return false if r == false
+
+          Array(r).each { |v| @weekdays << [ v ] }
+
+          next
+        end
+
         if sp == :tilde
           a = random(0, 6, a, z, sl, opts)
           z = nil unless sl
@@ -805,6 +935,28 @@ module Fugit
 
       def slash(i); rex(:slash, i, /\/\d\d?/); end
 
+      # stable hash ("H") extension
+      def lpar(i); str(:lpar, i, '('); end
+      def rpar(i); str(:rpar, i, ')'); end
+      def hletter(i); rex(:hletter, i, /H(?![A-Za-z0-9])/); end
+
+      def hb_mos(i); seq(nil, i, :lpar, :mos, :hyphen, :mos, :rpar); end
+      def hb_hou(i); seq(nil, i, :lpar, :hou, :hyphen, :hou, :rpar); end
+      def hb_dom(i); seq(nil, i, :lpar, :dom, :hyphen, :dom, :rpar); end
+      def hb_mon(i); seq(nil, i, :lpar, :mon, :hyphen, :mon, :rpar); end
+      def hb_dow(i); seq(nil, i, :lpar, :dow, :hyphen, :dow, :rpar); end
+
+      def hh_mos(i); seq(:hh, i,
+        :hletter, :hb_mos, '?', :slash, '?'); end
+      def hh_hou(i); seq(:hh, i,
+        :hletter, :hb_hou, '?', :slash, '?'); end
+      def hh_dom(i); seq(:hh, i,
+        :hletter, :hb_dom, '?', :slash, '?'); end
+      def hh_mon(i); seq(:hh, i,
+        :hletter, :hb_mon, '?', :slash, '?'); end
+      def hh_dow(i); seq(:hh, i,
+        :hletter, :hb_dow, '?', :slash, '?'); end
+
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
       def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
@@ -848,11 +1000,11 @@ module Fugit
       def sorws_dow(i); seq(nil, i, :sor_dow, :slash, '?'); end
 
       # ssws: slash or sorws
-      def mos_elt(i); alt(:elt, i, :slash, :sorws_mos); end
-      def hou_elt(i); alt(:elt, i, :slash, :sorws_hou); end
-      def dom_elt(i); alt(:elt, i, :slash, :sorws_dom); end
-      def mon_elt(i); alt(:elt, i, :slash, :sorws_mon); end
-      def dow_elt(i); alt(:elt, i, :slash, :sorws_dow); end
+      def mos_elt(i); alt(:elt, i, :slash, :hh_mos, :sorws_mos); end
+      def hou_elt(i); alt(:elt, i, :slash, :hh_hou, :sorws_hou); end
+      def dom_elt(i); alt(:elt, i, :slash, :hh_dom, :sorws_dom); end
+      def mon_elt(i); alt(:elt, i, :slash, :hh_mon, :sorws_mon); end
+      def dow_elt(i); alt(:elt, i, :slash, :hh_dow, :sorws_dow); end
 
       def mod(i); rex(:mod, i, /%\d+(\+\d+)?/); end
 
@@ -920,6 +1072,29 @@ module Fugit
 
         at, zt, spt, slt, hat, mot = nil
 
+        hht = t.subgather(nil).find { |tt| tt.name == :hh }
+
+        if hht
+
+          hht.subgather(nil).each do |tt|
+            case tt.name
+            when :slash then slt = tt
+            when :hyphen then spt = tt
+            else
+              if tt.name.to_s.match?(/\A(mos|hou|dom|mon|dow)\z/)
+                if spt; zt ||= tt; else; at = tt; end
+              end
+            end
+          end
+
+          sl = slt ? slt.string[1..-1].to_i : nil
+
+          a = at ? rewrite_bound(k, at) : nil
+          z = zt ? rewrite_bound(k, zt) : nil
+
+          return [ a, z, spt ? :hyphen : nil, sl, nil, nil, :h ]
+        end
+
         t.subgather(nil).each do |tt|
           case tt.name
           when :slash then slt = tt
@@ -946,7 +1121,7 @@ module Fugit
         #a, z = z, a if a && z && a > z
           # handled downstream since gh-27
 
-        [ a, z, sp, sl, ha, mo ]
+        [ a, z, sp, sl, ha, mo, nil ]
       end
 
       def rewrite_entry(t)
