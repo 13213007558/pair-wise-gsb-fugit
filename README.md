@@ -680,6 +680,46 @@ p Fugit::Duration.to_long_s('1y2M1d4h')
 ```
 
 
+## `Fugit::Recurrence`
+
+An anchored sequence of points in time, separated by a calendar duration.
+
+Adding `1M` repeatedly to a time starting on January 31st lets the adjusted February 28th/29th become the new anchor, and the sequence drifts to the 28th forever. A `Fugit::Recurrence` instead keeps its original anchor and computes every occurrence directly from it, so a monthly task starting on January 31st stays on the 31st (as far as each month permits):
+
+```ruby
+require 'fugit'
+
+rec = Fugit::Recurrence.new('1M', '2024-01-31 09:00', overflow: :clamp)
+
+rec.at(0)  # ==> 2024-01-31 09:00 (the anchor itself)
+rec.at(1)  # ==> 2024-02-29 09:00 (leap year, clamped to end of month)
+rec.at(2)  # ==> 2024-03-31 09:00 (back to the 31st, no drift)
+rec.at(12) # ==> 2025-01-31 09:00 (next year, anchor day preserved)
+rec.at(-1) # ==> 2023-12-31 09:00 (negative indices walk backwards)
+
+rec.next_time(rec.at(2))      # ==> 2024-04-30 09:00
+rec.previous_time(rec.at(2))  # ==> 2024-02-29 09:00
+```
+
+Years and months advance by calendar; weeks, days, hours, minutes and seconds are added as absolute amounts of seconds, following the `Fugit::Duration#add_to_time` convention.
+
+The `overflow:` keyword is mandatory and explicitly selects what happens when the anchor day of month does not exist in a target month (like the 31st in February, or February 29th in a non-leap year):
+
+* `:clamp` clamps down to the last day of the month
+* `:skip` lets the occurrence not exist, indices skip over it
+* `:raise` raises a `Fugit::Recurrence::OverflowError`
+
+```ruby
+rec = Fugit::Recurrence.new('1y', '2024-02-29 10:00', overflow: :skip)
+rec.at(1)  # ==> 2028-02-29 10:00 (non-leap years are skipped)
+
+rec = Fugit::Recurrence.new('1y', '2024-02-29 10:00', overflow: :raise)
+rec.at(1)  # ==> raises Fugit::Recurrence::OverflowError
+```
+
+Iterating with `#next_time` / `#previous_time` and computing `#at(n)` directly are consistent, since both are computed from the original anchor, never by accumulating already adjusted dates.
+
+
 ## `Fugit::At`
 
 Points in time are parsed and given back as EtOrbi::EoTime instances.
