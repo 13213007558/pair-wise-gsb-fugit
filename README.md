@@ -521,6 +521,62 @@ c = Fugit.parse('5 * * * * *') # every minute at second 5
 ```
 
 
+### relation analysis
+
+Before replacing a cron with a new one, it helps to know whether the new
+rule drops any of the old triggers. `Fugit.cron_relation` compares two
+schedules symbolically, as sets of fire instants over an infinite horizon,
+and returns a `Fugit::CronRelation::Result`:
+
+* `:equal` — both schedules fire at exactly the same instants
+* `:contains` — `a` fires at every instant `b` fires at, and more
+* `:contained` — the converse
+* `:intersects` — they share instants, but each also has its own
+* `:disjoint` — they never fire at the same instant
+* `:undecidable` — the input is out of scope (see below)
+
+```ruby
+r = Fugit.cron_relation('0 0 1,15 * 5', '0 0 * * 5')
+r.relation       # => :contains
+r.side           # => :a      (the bigger schedule)
+r.witness        # => the earliest instant, at/after "from", that
+                 #    distinguishes the two rules
+```
+
+`#witness` is the earliest such instant at or after the caller-supplied
+start (defaults to now); `#side` says which schedule fires there (`:a` or
+`:b`). It is a concrete counterexample, useful to confirm a planned change
+is safe or to see what it adds or removes.
+
+```ruby
+Fugit.cron_relation('0 0 29 2 *', '0 0 28 2 *', '2023-06-01 UTC')
+  # => #<... relation=:disjoint witness=2024-02-28 00:00:00 side=:b>
+```
+
+The comparison does not simulate occurrences. In a fixed-offset zone the
+proleptic Gregorian calendar repeats exactly every 400 years
+(146097 days), so each schedule is reduced to a day mask over that cycle
+and a time-of-day mask, and the relation is decided with set operations
+on those masks; the witness is located by bit search, never by scanning
+days or seconds.
+
+Analysis is only possible for crons anchored to UTC or to a single fixed
+UTC offset shared by both schedules. Dynamic (DST) zones, the weekday
+modulo notation (`mon%2`), and the random `~` notation are reported as
+`:undecidable` with a `#reason` rather than guessed:
+
+```ruby
+Fugit.cron_relation('0 0 * * mon%2', '0 0 * * mon')
+  # => #<... relation=:undecidable reason='weekday modulo ... not decidable'>
+```
+
+Month and month-day lists (including last-day `L`/`-1`), weekday lists
+and ranges, the `nth` (`mon#1`) and last-nth (`mon#-1`, `fri#L`)
+extensions, dom/dow OR and `&` AND semantics, and the seconds field are
+all supported. The method is also available as `cron#relation_to(other,
+from)`.
+
+
 ## `Fugit::Nat`
 
 Fugit understand some kind of "natural" language:

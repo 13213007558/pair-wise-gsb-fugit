@@ -2,6 +2,16 @@
 # CHANGELOG.md
 
 
+## fugit 1.14.1 (unreleased)
+
+* Add `Fugit.cron_relation(a, b, from)` / `Fugit::Cron#relation_to`: symbolic
+  comparison of two cron schedules (equal, directed containment,
+  intersection, disjoint) with an earliest distinguishing witness.
+  Limited to UTC or a single shared fixed UTC offset; dynamic zones, the
+  weekday modulo (`%n`) and the random (`~`) notations are reported as
+  undecidable.
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
