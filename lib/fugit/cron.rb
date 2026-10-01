@@ -21,6 +21,8 @@ module Fugit
       :original, :zone)
     attr_reader(
       :seconds, :minutes, :hours, :monthdays, :months, :weekdays, :timezone)
+    attr_reader(
+      :day_and)
 
     class << self
 

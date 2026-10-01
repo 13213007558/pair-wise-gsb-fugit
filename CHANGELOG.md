@@ -2,6 +2,13 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0 not yet released
+
+* Add Fugit::Cron.relate and Fugit::Cron#relation_to, exact set relation
+  analysis (equal, subset, superset, overlap, disjoint) between two cron
+  schedules, with earliest witness time, for UTC and fixed offset timezones
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256

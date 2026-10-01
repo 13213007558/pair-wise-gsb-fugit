@@ -213,6 +213,55 @@ Example of cron strings understood by fugit:
 
 Please note that `'15/30 * * * *'` is interpreted as `'15-59/30 * * * *'` since fugit 1.4.6.
 
+### comparing two crons
+
+`Fugit::Cron.relate(a, b, from)` (or `a_cron.relation_to(b, from)`) analyses
+the relation between the occurrence sets of two cron schedules. It is meant
+for situations like "I want to modify this cron, will the new one miss any
+of the old trigger times?".
+
+The analysis is exact. It does not "try out" the next year, nor does it
+scan the Gregorian calendar second by second. In UTC or in a fixed offset
+timezone, a cron occurrence set is the product of a set of calendar dates
+(periodic over the 400 year Gregorian cycle) and a set of times of day,
+and the relation is computed on those sets directly.
+
+```ruby
+r = Fugit::Cron.relate('0 0 * * 1', '0 0 * * 1,2', '2026-10-01 00:00:00 UTC')
+
+r.relation      # => :subset (a triggers strictly less often than b)
+r.witness       # => 2026-10-06 00:00:00 Z, the earliest time at or after
+                #    "from" where exactly one of the two crons triggers
+r.witness_cron  # => :b (the cron that triggers at the witness time)
+```
+
+The relation is one of `:equal`, `:subset`, `:superset`, `:overlap`
+(aliased as `:intersect`), `:disjoint` or `:undecidable`. The witness is
+`nil` when the two schedules are equivalent.
+
+The analysis supports the month, weekday, last day (`L`) and nth weekday
+of the month (`#`) syntaxes. It is limited to UTC or to a single fixed
+offset timezone shared by both crons. It returns `:undecidable`, with a
+`#reason`, for:
+
+```ruby
+r.reason  # => :random_syntax       a cron uses the random '~' syntax
+          #    :weekday_modulo      a cron uses the weekday modulo '%' syntax
+          #    :dynamic_timezone    a timezone that is not UTC or a fixed offset
+          #    :conflicting_zones   the two crons do not share the same offset
+```
+
+Since the analysis covers the whole Gregorian cycle, it notices
+differences that only show up in leap years:
+
+```ruby
+r = Fugit::Cron.relate('0 0 28,29 2 *', '0 0 28 2 *', '2026-03-01 UTC')
+r.relation  # => :superset
+r.witness   # => 2028-02-29 00:00:00 Z
+  # a "run both crons for a year and compare" approach would
+  # wrongly conclude the two crons are equivalent
+```
+
 ### time zones
 
 Fugit accepts a IANA timezone identifier right after a cron string:
