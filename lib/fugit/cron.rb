@@ -21,6 +21,8 @@ module Fugit
       :original, :zone)
     attr_reader(
       :seconds, :minutes, :hours, :monthdays, :months, :weekdays, :timezone)
+    attr_reader(
+      :hash_key, :hash_namespace, :hash_fields)
 
     class << self
 
@@ -92,6 +94,15 @@ module Fugit
         weekdays_to_cron_s,
         @timezone ? @timezone.name : nil
           ].compact.join(' ')
+    end
+
+    # The cron expression with every "H" hash placeholder expanded
+    # into the value(s) it was determined to stand for. It is the
+    # expression that actually drives the trigger sequence.
+    #
+    def expanded
+
+      to_cron_s
     end
 
     class TimeCursor
@@ -577,6 +588,8 @@ module Fugit
       @cron_s = nil # just to be sure
       @day_and = h[:&]
 
+      determine_hash_options(h, opts) or return nil
+
       valid =
         determine_seconds(h[:sec], opts) &&
         determine_minutes(h[:min], opts) &&
@@ -590,6 +603,113 @@ module Fugit
       return nil unless compact_month_days
 
       self
+    end
+
+    # "H" placeholders (stable hashes)
+    #
+    # See the "the hash extension" section of the README.
+
+    HASH_FIELDS = {
+      sec: 'seconds',
+      min: 'minutes',
+      hou: 'hours',
+      dom: 'monthdays',
+      mon: 'months',
+      dow: 'weekdays' }.freeze
+
+    def determine_hash_options(h, opts)
+
+      keys =
+        HASH_FIELDS.keys.select { |k|
+          Array(h[k]).any? { |e| e.is_a?(Array) && e[6] } }
+
+      @hash_fields = keys.collect { |k| HASH_FIELDS[k] }.freeze
+
+      @hash_occurrences =
+        HASH_FIELDS.values.inject({}) { |hh, fn| hh[fn] = 0; hh }
+
+      @hash_key =
+        opts.has_key?(:hash_key) ? opts[:hash_key] :
+        opts.has_key?(:key) ? opts[:key] :
+        nil
+      @hash_namespace =
+        if opts.has_key?(:hash_namespace)
+          opts[:hash_namespace]
+        elsif opts.has_key?(:namespace)
+          opts[:namespace]
+        else
+          'fugit'
+        end
+      @hash_namespace = 'fugit' if @hash_namespace.nil?
+
+      if @hash_fields.any? && @hash_key.nil?
+        fail ArgumentError.new(
+          'a :key (business key) is required to expand the ' +
+          "H placeholder(s) in #{@original.inspect}")
+      end
+
+      true
+    end
+
+    def stable_hash(field, occurrence)
+
+      m =
+        [
+          'fugit-hash-v1',
+          @hash_namespace,
+          field,
+          occurrence,
+          @hash_key
+        ].collect(&:to_s).join("\x1f")
+
+      ::Digest::MD5.digest(m).unpack1('N')
+    end
+
+    def hash_expand(field, min, max, a, z, sl)
+
+      field = field.to_s
+
+      if (a && (a < min || a > max)) || (z && (z < min || z > max))
+        return false
+      end
+
+      return false if sl && sl < 1
+      return false if a && z && a > z
+
+      n = @hash_occurrences[field]
+      if sl
+
+          # H/step or H(a-b)/step, the hash only picks the phase
+          # (offset within a step), all points of the (bounded) grid
+          # are then included
+
+        sta = a || min
+        edn = z || max
+
+        size = max - min + 1
+
+          # the phase (offset within a step) only spans the shorter
+          # of the step and the field size
+
+        phase = stable_hash(field, n) % [ sl, size ].min
+
+        first = sta + phase
+
+        vs = first > edn ? [] : (first..edn).step(sl).to_a
+
+      else
+
+          # H or H(a-b), the hash selects a single value
+
+        lo = a || min
+        hi = z || max
+
+        vs = lo + stable_hash(field, n) % (hi - lo + 1)
+      end
+
+      @hash_occurrences[field] = n + 1
+
+      vs
     end
 
     def expand(min, max, opts, r)
@@ -685,9 +805,9 @@ module Fugit
       null = false
 
       r = arr
-        .collect { |v|
-          expand(min, max, opts, v) }
-        .flatten(1)
+        .flat_map { |v|
+          (a, z, _sp, sl, _ha, _mo, hs = v)
+          hs ? hash_expand(key, min, max, a, z, sl) : expand(min, max, opts, v) }
         .collect { |e|
           return false if e == false
           null = null || e == nil
@@ -721,7 +841,15 @@ module Fugit
 
       @weekdays = []
 
-      arr.each do |a, z, sp, sl, ha, mo| # a to z, seperator, slash, hash, and mod
+      arr.each do |a, z, sp, sl, ha, mo, hs|
+
+        if hs
+          vs = hash_expand('weekdays', 0, 6, a, z, sl)
+          return false if vs == false
+          Array(vs).each { |v| @weekdays << [ v ] }
+          next
+        end
+
         if sp == :tilde
           a = random(0, 6, a, z, sl, opts)
           z = nil unless sl
@@ -799,6 +927,8 @@ module Fugit
       def star(i); str(nil, i, '*'); end
       def hyphen(i); str(:hyphen, i, '-'); end
       def tilde(i); str(:tilde, i, '~'); end
+      def lpar(i); str(nil, i, '('); end
+      def rpar(i); str(nil, i, ')'); end
       def comma(i); rex(nil, i, /,([ \t]*,)*/); end
       def comma?(i); rex(nil, i, /([ \t]*,)*/); end
       def and?(i); rex(nil, i, /&?/); end
@@ -807,17 +937,38 @@ module Fugit
 
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
+      def hb_hou(i); rex(:hou, i, /\d\d?/); end # bound in H(a-b), validated downstream
       def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
       def mon(i); rex(:mon, i, MONTH_REX); end
       def dow(i); rex(:dow, i, DOW_REX); end
 
+      def hh(i); rex(:hh, i, /h(?![a-z])/i); end # hash placeholder
+        #
+        # the (?![a-z]) boundary prevents the dow "H" from eating
+        # the first letter of a following timezone (Hongkong, HST, ...)
+
       def dow_hash(i); rex(:hash, i, /#(-?[1-5]|last|l)/i); end
 
       def _mos(i); seq(nil, i, :hyphen, :mos); end
+      def _hb_hou(i); seq(nil, i, :hyphen, :hb_hou); end
       def _hou(i); seq(nil, i, :hyphen, :hou); end
       def _dom(i); seq(nil, i, :hyphen, :dom); end
       def _mon(i); seq(nil, i, :hyphen, :mon); end
       def _dow(i); seq(nil, i, :hyphen, :dow); end
+
+      # hpr: hashed parenthesized range H(a-b)
+      def hpr_mos(i); seq(nil, i, :hh, :lpar, :mos, :_mos, :rpar); end
+      def hpr_hou(i); seq(nil, i, :hh, :lpar, :hb_hou, :_hb_hou, :rpar); end
+      def hpr_dom(i); seq(nil, i, :hh, :lpar, :dom, :_dom, :rpar); end
+      def hpr_mon(i); seq(nil, i, :hh, :lpar, :mon, :_mon, :rpar); end
+      def hpr_dow(i); seq(nil, i, :hh, :lpar, :dow, :_dow, :rpar); end
+
+      # hp: hash placeholder, bare H or H(a-b)
+      def hp_mos(i); alt(nil, i, :hpr_mos, :hh); end
+      def hp_hou(i); alt(nil, i, :hpr_hou, :hh); end
+      def hp_dom(i); alt(nil, i, :hpr_dom, :hh); end
+      def hp_mon(i); alt(nil, i, :hpr_mon, :hh); end
+      def hp_dow(i); alt(nil, i, :hpr_dow, :hh); end
 
       # r: range
       def r_mos(i); seq(nil, i, :mos, :_mos, '?'); end
@@ -834,11 +985,11 @@ module Fugit
       def t_dow(i); seq(nil, i, :dow, '?', :tilde, :dow, '?'); end
 
       # sor: star or range
-      def sor_mos(i); alt(nil, i, :star, :t_mos, :r_mos); end
-      def sor_hou(i); alt(nil, i, :star, :t_hou, :r_hou); end
-      def sor_dom(i); alt(nil, i, :star, :t_dom, :r_dom); end
-      def sor_mon(i); alt(nil, i, :star, :t_mon, :r_mon); end
-      def sor_dow(i); alt(nil, i, :star, :t_dow, :r_dow); end
+      def sor_mos(i); alt(nil, i, :star, :t_mos, :hp_mos, :r_mos); end
+      def sor_hou(i); alt(nil, i, :star, :t_hou, :hp_hou, :r_hou); end
+      def sor_dom(i); alt(nil, i, :star, :t_dom, :hp_dom, :r_dom); end
+      def sor_mon(i); alt(nil, i, :star, :t_mon, :hp_mon, :r_mon); end
+      def sor_dow(i); alt(nil, i, :star, :t_dow, :hp_dow, :r_dow); end
 
       # sorws: star or range with[out] slash
       def sorws_mos(i); seq(nil, i, :sor_mos, :slash, '?'); end
@@ -920,12 +1071,15 @@ module Fugit
 
         at, zt, spt, slt, hat, mot = nil
 
+        hs = false
+
         t.subgather(nil).each do |tt|
           case tt.name
           when :slash then slt = tt
           when :hash then hat = tt
           when :mod then mot = tt
           when :hyphen then spt = tt
+          when :hh then hs = true
           when :tilde then spt = tt
           else if spt; zt ||= tt; else; at = tt; end
           end
@@ -946,7 +1100,7 @@ module Fugit
         #a, z = z, a if a && z && a > z
           # handled downstream since gh-27
 
-        [ a, z, sp, sl, ha, mo ]
+        [ a, z, sp, sl, ha, mo, hs ]
       end
 
       def rewrite_entry(t)

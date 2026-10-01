@@ -509,6 +509,60 @@ Fugit.parse('~ * * * *', random: SecureRandom) # on a cryptographically secure r
 Please note that the random values are determined at parse time. So `"~29 * * * *"` at parse time could become `"17 * * * *"` for example and go on triggering every hour at minute 17, until a new parsing occurs and another (or the same) minute is picked. This aligns with the OpenBSD [`man 5 crontab`](https://man.openbsd.org/crontab.5), OpenBSD `crond` rolling the dice at load time.
 
 
+### the hash extension
+
+When thousands of schedules share the same cron expression (think all the tenants running "at the top of the hour"), they all fire at once. Fugit accepts the `H` placeholder to spread them deterministically.
+
+`H` stands for "hash": the placeholder is replaced, at parse time, by a value computed from a business key (for example a tenant id) and an optional namespace. The computation does not rely on `Kernel#hash` (which is seeded per process in modern Ruby), it uses `Digest::MD5`, so the same expression, key, and namespace always expand to the same thing, in every process and on every Ruby version.
+
+Three forms are accepted, in the second, minute, hour, day-of-month, month, and day-of-week fields:
+
+```ruby
+Fugit.parse('H * * * *', key: 'tenant-42')
+  # one fixed minute in 0-59, ==> '43 * * * *' for that key
+
+Fugit.parse('H(0-29) * * * *', key: 'tenant-42')
+  # one fixed minute in 0-29, ==> '13 * * * *' for that key
+
+Fugit.parse('H/10 * * * *', key: 'tenant-42')
+  # every 10 minutes, starting at a fixed phase
+  # ==> '3,13,23,33,43,53 * * * *' for that key
+
+Fugit.parse('0 H(9-17)/2 * * *', key: 'tenant-42')
+  # every two hours between 9 and 17, starting at a fixed phase
+  # ==> '0 9,11,13,15,17 * * *' (or '0 10,12,14,16 * * *') for that key
+```
+
+A lower case `h` is accepted as well.
+
+Pass the business key with `:key` (alias `:hash_key`) and the namespace with `:namespace` (alias `:hash_namespace`, defaults to `"fugit"`). Parsing an expression that contains `H` without a key raises an `ArgumentError`.
+
+Rules:
+
+* the salt of a hash is the namespace, the field name (as in `"minutes"`, `"hours"`, ...) and the position of the `H` placeholder within that field. So the result for a field never depends on what the other fields contain, nor on the order in which the fields are parsed. Two `H` placeholders in the same field (`H,H`) are salted independently.
+
+* for `H` and `H(a-b)` the hash picks a single value, respectively in the full field range and in `[a, b]`.
+
+* for `H/step` the hash only picks a *phase*, an offset between `0` and `step - 1` (clamped to the field size); the field then matches every `step`, starting at that phase. `H(sta-edn)/step` is the same, but the grid is limited to `[sta, edn]`. If the phase pushes the first point past `edn`, the field is empty (the cron never fires).
+
+* the `step` must be greater than or equal to `1`, and `a` and `b` must belong to the field range (for example `H(0-60)` is invalid in the minute field, `0 H(0-24) * * *` is invalid in the hour field, `0 0 * * H(0-7)` is invalid for weekdays).
+
+The original expression is kept as `#original`, while `#expanded` (alias of `#to_cron_s`) returns the expression the cron actually triggers on. `#hash_fields`, `#hash_key`, and `#hash_namespace` expose what was used. A `Marshal` round-trip reproduces the exact same trigger sequence.
+
+```ruby
+c = Fugit.parse('H/15 H(8-20) * * 1-5', key: 'tenant-42', namespace: 'billing')
+
+c.original  # ==> 'H/15 H(8-20) * * 1-5'
+c.expanded  # ==> '7,22,37,52 16 * * 1,2,3,4,5' (for that key)
+
+c.hash_fields     # ==> ["minutes", "hours"]
+c.hash_key        # ==> "tenant-42"
+c.hash_namespace  # ==> "billing"
+```
+
+Changing the business key only re-decides the fields that contain an `H` placeholder; literal fields are untouched. This extension is independent from [the random extension](#the-random-extension): `~` still rolls the dice at parse time and is not affected by the key or the namespace.
+
+
 ### the second extension
 
 Fugit accepts cron strings with five elements, `minute hour day-of-month month day-of-week`, the standard cron format or six elements `second minute hour day-of-month month day-of-week`.

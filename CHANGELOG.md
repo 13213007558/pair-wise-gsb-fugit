@@ -2,6 +2,11 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0 not yet released
+
+* Support the `H` stable-hash placeholder (`H`, `H(a-b)`, `H/step`, and `H(a-b)/step`) to deterministically spread schedules from a business key and a namespace
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
